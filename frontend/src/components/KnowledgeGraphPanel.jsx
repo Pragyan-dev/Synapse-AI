@@ -112,12 +112,13 @@ function KnowledgeGraphPanel({
   const [isLoading, setIsLoading] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
   const [error, setError] = useState(null)
+  const [unavailableMessage, setUnavailableMessage] = useState(null)
   const [selectedNode, setSelectedNode] = useState(null)
   const [hoveredNode, setHoveredNode] = useState(null)
   const graphRef = useRef()
   const canvasWrapRef = useRef()
   const fitTimerRef = useRef(null)
-  const [dimensions, setDimensions] = useState({ width: 340, height: 400 })
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
   const syncedTerms = useMemo(() => extractGraphTerms(syncedSearchTerm), [syncedSearchTerm])
 
   const queueGraphFit = useCallback((delay = 180) => {
@@ -126,8 +127,8 @@ function KnowledgeGraphPanel({
     }
 
     fitTimerRef.current = window.setTimeout(() => {
-      if (!graphRef.current) return
-      if (!graphData.nodes.length) return
+      if (!graphRef.current || graphData.nodes.length === 0) return
+      if (!dimensions.width || !dimensions.height) return
 
       const bbox = graphRef.current.getGraphBbox?.()
       if (!bbox) return
@@ -177,7 +178,7 @@ function KnowledgeGraphPanel({
     })
     observer.observe(canvasWrapRef.current)
     return () => observer.disconnect()
-  }, [])
+  }, [graphData.nodes.length])
 
   useEffect(() => {
     return () => {
@@ -192,6 +193,7 @@ function KnowledgeGraphPanel({
 
     setIsLoading(true)
     setError(null)
+    setUnavailableMessage(null)
     setSelectedNode(null)
 
     try {
@@ -203,7 +205,20 @@ function KnowledgeGraphPanel({
       if (!res.ok) throw new Error('Failed to fetch graph data')
       const data = await res.json()
 
+      if (data.unavailable) {
+        setUnavailableMessage(data.message || 'Knowledge graph is temporarily unavailable.')
+        setGraphData({ nodes: [], links: [] })
+        setStats(null)
+        return
+      }
+
       if (data.error) {
+        if (/knowledge graph unavailable/i.test(data.error)) {
+          setUnavailableMessage(data.error)
+          setGraphData({ nodes: [], links: [] })
+          setStats(null)
+          return
+        }
         setError(data.error)
         setGraphData({ nodes: [], links: [] })
         setStats(null)
@@ -264,6 +279,7 @@ function KnowledgeGraphPanel({
       setStats(data.stats || null)
       queueGraphFit(280)
     } catch (err) {
+      setUnavailableMessage(null)
       setError(err.message)
     } finally {
       setIsLoading(false)
@@ -294,6 +310,7 @@ function KnowledgeGraphPanel({
       setGraphData({ nodes: [], links: [] })
       setStats(null)
       setError(null)
+      setUnavailableMessage(null)
       setSelectedNode(null)
       return
     }
@@ -534,32 +551,32 @@ function KnowledgeGraphPanel({
             <div className="graph-sync-empty">No synced context yet.</div>
           )}
 
-          <div className="graph-sync-desc">
-            {contextDescription}
-            {patientId && !manualOverride ? ` Patient ${patientId} is included in the graph query.` : ''}
-          </div>
+        <div className="graph-sync-desc">
+          {contextDescription}
+          {patientId && !manualOverride ? ` Patient ${patientId} is included in the graph query.` : ''}
         </div>
+      </div>
 
-        {/* Search bar */}
-        <form className="graph-search" onSubmit={handleSearch}>
-          <div className="graph-search-input-wrap">
-            <Search size={18} className="graph-search-icon" />
-            <input
-              type="text"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              placeholder={activeContextTerm ? `Override "${activeContextTerm}"` : 'Override graph focus'}
-              className="graph-search-input"
-            />
-          </div>
-          <button
-            type="submit"
-            className="graph-search-btn"
-            disabled={!allowManualOverride || isLoading || searchInput.trim().length < 2}
-          >
-            {isLoading && manualOverride ? <Loader2 size={16} className="spin" /> : 'Apply'}
-          </button>
-        </form>
+      {/* Search bar */}
+      <form className="graph-search" onSubmit={handleSearch}>
+        <div className="graph-search-input-wrap">
+          <Search size={18} className="graph-search-icon" />
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder={activeContextTerm ? `Override "${activeContextTerm}"` : 'Override graph focus'}
+            className="graph-search-input"
+          />
+        </div>
+        <button
+          type="submit"
+          className="graph-search-btn"
+          disabled={!allowManualOverride || isLoading || searchInput.trim().length < 2}
+        >
+          {isLoading && manualOverride ? <Loader2 size={16} className="spin" /> : 'Apply'}
+        </button>
+      </form>
 
         {/* Stats bar */}
         {stats && hasData && (
@@ -594,8 +611,17 @@ function KnowledgeGraphPanel({
         {/* Error */}
         {error && <div className="graph-error">{error}</div>}
 
+        {/* Unavailable state */}
+        {unavailableMessage && !isLoading && !hasData && (
+          <div className="graph-empty graph-empty--unavailable">
+            <Network size={64} strokeWidth={1} />
+            <h3>Knowledge Graph Unavailable</h3>
+            <p>{unavailableMessage}</p>
+          </div>
+        )}
+
         {/* Empty state */}
-        {!hasData && !isLoading && !error && (
+        {!hasData && !isLoading && !error && !unavailableMessage && (
           <div className="graph-empty">
             <Network size={64} strokeWidth={1} />
             <h3>Knowledge Graph</h3>
@@ -631,29 +657,31 @@ function KnowledgeGraphPanel({
                   <Minus size={14} />
                 </button>
               </div>
-              <ForceGraph2D
-                ref={graphRef}
-                graphData={graphData}
-                width={dimensions.width}
-                height={dimensions.height}
-                nodeCanvasObject={nodeCanvasObject}
-                nodePointerAreaPaint={(node, color, ctx) => {
-                  if (!Number.isFinite(node.x)) return
-                  const r = Math.sqrt(node.val) * 1.5 + 4
-                  ctx.beginPath()
-                  ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
-                  ctx.fillStyle = color
-                  ctx.fill()
-                }}
-                linkCanvasObject={linkCanvasObject}
-                onNodeHover={(node) => setHoveredNode(node?.id || null)}
-                onNodeClick={handleNodeClick}
-                backgroundColor="transparent"
-                cooldownTicks={140}
-                d3AlphaDecay={0.025}
-                d3VelocityDecay={0.3}
-                onEngineStop={() => queueGraphFit(64)}
-              />
+              {dimensions.width > 0 && dimensions.height > 0 && (
+                <ForceGraph2D
+                  ref={graphRef}
+                  graphData={graphData}
+                  width={dimensions.width}
+                  height={dimensions.height}
+                  nodeCanvasObject={nodeCanvasObject}
+                  nodePointerAreaPaint={(node, color, ctx) => {
+                    if (!Number.isFinite(node.x)) return
+                    const r = Math.sqrt(node.val) * 1.5 + 4
+                    ctx.beginPath()
+                    ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
+                    ctx.fillStyle = color
+                    ctx.fill()
+                  }}
+                  linkCanvasObject={linkCanvasObject}
+                  onNodeHover={(node) => setHoveredNode(node?.id || null)}
+                  onNodeClick={handleNodeClick}
+                  backgroundColor="transparent"
+                  cooldownTicks={140}
+                  d3AlphaDecay={0.025}
+                  d3VelocityDecay={0.3}
+                  onEngineStop={() => queueGraphFit(64)}
+                />
+              )}
             </div>
 
             {/* Detail sidebar */}

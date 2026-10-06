@@ -7,17 +7,6 @@ const API_BASE = '/api'
 // ── Client-side explanation cache (shared across all instances) ─────────
 const _explanationCache = {}
 
-async function fetchTermExplanationFromApi(term) {
-    const cacheKey = term.toLowerCase().trim()
-    if (_explanationCache[cacheKey]) return _explanationCache[cacheKey]
-    const res = await fetch(`${API_BASE}/explain-term?term=${encodeURIComponent(term)}`)
-    if (!res.ok) throw new Error('Explain request failed')
-    const data = await res.json()
-    const explanation = data.explanation ?? ''
-    _explanationCache[cacheKey] = explanation
-    return explanation
-}
-
 // ── Known medical terms + Latin/Greek root patterns ────────────────────
 const MEDICAL_TERMS = new Set([
     // Conditions
@@ -125,13 +114,13 @@ export default function MedicalTermHighlighter({ text, enabled = true, children 
             const res = await fetch(`${API_BASE}/explain-term?term=${encodeURIComponent(term)}`)
             if (!res.ok) throw new Error('Explain request failed')
             const data = await res.json()
-            
+
             const result = {
                 text: data.explanation ?? '',
                 note: data.clinician_note,
                 source: data.source || 'Library'
             }
-            
+
             _explanationCache[cacheKey] = result
             setExplanation(result)
         } catch {
@@ -375,13 +364,13 @@ export function SelectionExplainToolbar({ enabled, containerRef }) {
             const res = await fetch(`${API_BASE}/explain-term?term=${encodeURIComponent(term)}`)
             if (!res.ok) throw new Error('Explain request failed')
             const data = await res.json()
-            
+
             const result = {
                 text: data.explanation ?? '',
                 note: data.clinician_note,
                 source: data.source || 'Library'
             }
-            
+
             _explanationCache[cacheKey] = result
             setExplanation(result)
         } catch {
@@ -452,6 +441,12 @@ export function SelectionExplainToolbar({ enabled, containerRef }) {
  * It applies the highlighter to the rendered HTML elements (like paragraphs and lists)
  * rather than modifying the raw markdown string before parsing.
  */
+function normalizeHeadings(text) {
+    if (!text) return text
+    // Ensure ATX headings have a space after # characters (CommonMark requirement)
+    return text.replace(/^(#{1,6})([^\s#])/gm, '$1 $2')
+}
+
 export function MarkdownWithHighlight({ children, enabled = true }) {
     return (
         <ReactMarkdown
@@ -470,7 +465,7 @@ export function MarkdownWithHighlight({ children, enabled = true }) {
                 blockquote: ({ node: _node, ...props }) => <blockquote {...props}><MedicalTermHighlighter enabled={enabled}>{props.children}</MedicalTermHighlighter></blockquote>,
             }}
         >
-            {children}
+            {normalizeHeadings(children)}
         </ReactMarkdown>
     )
 }

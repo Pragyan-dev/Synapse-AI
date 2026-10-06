@@ -1,1 +1,35 @@
-[]
+[
+  {
+    "id": "259fd233825e4c51",
+    "patient_id": "10002428",
+    "title": "pdf 2ac06101fb6b",
+    "original_filename": "pdf_2ac06101fb6b.pdf",
+    "mime_type": "application/pdf",
+    "file_kind": "pdf",
+    "uploaded_by": "recovered",
+    "uploaded_at": "2026-04-23T23:05:36.949298Z",
+    "url": "/uploads/patient-files/10002428/pdf_2ac06101fb6b.pdf"
+  },
+  {
+    "id": "42cc290421f4497e",
+    "patient_id": "10002428",
+    "title": "image a68c4b9fc691",
+    "original_filename": "image_a68c4b9fc691.png",
+    "mime_type": "image/png",
+    "file_kind": "image",
+    "uploaded_by": "recovered",
+    "uploaded_at": "2026-04-23T23:05:36.948859Z",
+    "url": "/uploads/patient-files/10002428/image_a68c4b9fc691.png"
+  },
+  {
+    "id": "5b438f6588e74ee3",
+    "patient_id": "10035631",
+    "title": "claim check report 10035631",
+    "original_filename": "claim_check_report_10035631.pdf",
+    "mime_type": "application/pdf",
+    "file_kind": "pdf",
+    "uploaded_by": "patient",
+    "uploaded_at": "2026-04-22T22:09:51.781306Z",
+    "url": "/uploads/patient-files/10035631/pdf_5079302b3ac8.pdf"
+  }
+]

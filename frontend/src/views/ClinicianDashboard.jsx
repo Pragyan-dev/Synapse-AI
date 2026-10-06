@@ -9,7 +9,6 @@ import {
 import KnowledgeGraphPanel from '../components/KnowledgeGraphPanel'
 import SOAPNoteModal from '../components/SOAPNoteModal'
 import PatientInfoPanel from '../components/PatientInfoPanel'
-import CompoundPanelViewer from '../components/CompoundPanelViewer'
 import { MarkdownWithHighlight, SelectionExplainToolbar } from '../components/MedicalTermHighlighter'
 import SafeMarkdownWrapper from '../components/SafeMarkdownWrapper'
 import {
@@ -44,6 +43,25 @@ const cleanContent = (text) => {
     return t
 }
 
+async function readApiError(response, fallbackMessage) {
+    const contentType = response.headers.get('content-type') || ''
+
+    try {
+        if (contentType.includes('application/json')) {
+            const data = await response.json()
+            if (typeof data?.detail === 'string' && data.detail.trim()) return data.detail.trim()
+            if (typeof data?.message === 'string' && data.message.trim()) return data.message.trim()
+        } else {
+            const text = (await response.text()).trim()
+            if (text) return response.status >= 500 ? fallbackMessage : text.slice(0, 220)
+        }
+    } catch {
+        // Fall through to fallback message.
+    }
+
+    return fallbackMessage
+}
+
 const streamSseEvents = async (response, onEvent) => {
     const reader = response.body?.getReader()
     if (!reader) throw new Error('Streaming response unavailable')
@@ -65,7 +83,12 @@ const streamSseEvents = async (response, onEvent) => {
             if (!jsonStr) continue
 
             try {
-                onEvent(JSON.parse(jsonStr))
+                const event = JSON.parse(jsonStr)
+                const shouldContinue = onEvent(event)
+                if (shouldContinue === false || event.type === 'done' || event.type === 'error') {
+                    await reader.cancel().catch(() => {})
+                    return
+                }
             } catch {
                 // Ignore malformed partial events and continue streaming.
             }
@@ -95,7 +118,6 @@ export default function ClinicianDashboard() {
     const [imagePreview, setImagePreview] = useState(null)
     const [uploadedImagePath, setUploadedImagePath] = useState(null)
     const [isUploading, setIsUploading] = useState(false)
-    const [panelData, setPanelData] = useState(null)
 
     // Session
     const [sessionId, setSessionId] = useState(null)
@@ -105,6 +127,9 @@ export default function ClinicianDashboard() {
     // Patient
     const [selectedPatient, setSelectedPatient] = useState('')
     const [patientData, setPatientData] = useState(null)
+    const [patientAttachments, setPatientAttachments] = useState([])
+    const [patientAttachmentsLoading, setPatientAttachmentsLoading] = useState(false)
+    const [patientAttachmentsError, setPatientAttachmentsError] = useState('')
 
     // Settings
     const [temperature, setTemperature] = useState(0.1)
@@ -139,6 +164,9 @@ export default function ClinicianDashboard() {
     const fetchSessions = useCallback(async () => {
         try {
             const res = await fetch(`${API_BASE}/sessions?source=clinician`)
+            if (!res.ok) {
+                throw new Error(await readApiError(res, 'Failed to load sessions.'))
+            }
             const data = await res.json()
             setSessions(data.sessions || [])
         } catch (err) { console.error('Failed to load sessions:', err) }
@@ -164,20 +192,49 @@ export default function ClinicianDashboard() {
         setGraphContext(null)
         setDrugAlerts([])
         setPatientData(null)
-        if (!patId) { setPatientData(null); return }
+        setPatientAttachments([])
+        setPatientAttachmentsError('')
+        if (!patId) {
+            setPatientAttachmentsLoading(false)
+            return
+        }
+        setPatientAttachmentsLoading(true)
         try {
-            const res = await fetch(`${API_BASE}/patient/${patId}`)
-            if (res.ok) {
-                const data = await res.json()
-                setPatientData(data)
+            const [patientRes, attachRes] = await Promise.all([
+                fetch(`${API_BASE}/patient/${patId}`),
+                fetch(`${API_BASE}/patient/${patId}/attachments`),
+            ])
+            if (!patientRes.ok) {
+                throw new Error(await readApiError(patientRes, 'Failed to load patient data.'))
             }
-        } catch (err) { console.error('Failed to load patient:', err) }
+            const data = await patientRes.json()
+            setPatientData(data)
+
+            if (attachRes.ok) {
+                const attachData = await attachRes.json()
+                setPatientAttachments(Array.isArray(attachData.attachments) ? attachData.attachments : [])
+                setPatientAttachmentsError('')
+            } else {
+                setPatientAttachments([])
+                setPatientAttachmentsError(
+                    await readApiError(attachRes, 'Could not load patient imaging / reports.')
+                )
+            }
+        } catch (err) {
+            console.error('Failed to load patient:', err)
+            setPatientAttachments([])
+        } finally {
+            setPatientAttachmentsLoading(false)
+        }
     }
 
     // ── Session Management ───────────────────────────────────────────
     const createNewSession = async () => {
         try {
             const res = await fetch(`${API_BASE}/sessions/new?source=clinician`, { method: 'POST' })
+            if (!res.ok) {
+                throw new Error(await readApiError(res, 'Failed to create session.'))
+            }
             const data = await res.json()
             setSessionId(data.id)
             setSessionTitle('New Chat')
@@ -194,6 +251,9 @@ export default function ClinicianDashboard() {
     const loadSession = async (sid) => {
         try {
             const res = await fetch(`${API_BASE}/sessions/${sid}`)
+            if (!res.ok) {
+                throw new Error(await readApiError(res, 'Failed to load session.'))
+            }
             const data = await res.json()
             setSessionId(sid)
             setSessionTitle(data.title || 'Chat')
@@ -234,7 +294,6 @@ export default function ClinicianDashboard() {
         setSelectedImage(clipboardFile)
         setImagePreview(URL.createObjectURL(clipboardFile))
         setUploadedImagePath(null)
-        setPanelData(null)
         setIsUploading(true)
         if (fileInputRef.current) fileInputRef.current.value = ''
 
@@ -246,18 +305,11 @@ export default function ClinicianDashboard() {
                 const response = await fetch(`${API_BASE}/upload-image`, {
                     method: 'POST', body: formData
                 })
+                if (!response.ok) {
+                    throw new Error(await readApiError(response, 'Image upload failed.'))
+                }
                 const data = await response.json()
                 setUploadedImagePath(data.path)
-                // Detect compound panels
-                try {
-                    const panelRes = await fetch(`${API_BASE}/detect-panels`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ image_path: data.path })
-                    })
-                    const pData = await panelRes.json()
-                    setPanelData(pData)
-                } catch { setPanelData(null) }
                 return data.path
             } catch (error) {
                 console.error('Upload failed:', error)
@@ -287,7 +339,6 @@ export default function ClinicianDashboard() {
         setSelectedImage(null)
         setImagePreview(null)
         setUploadedImagePath(null)
-        setPanelData(null)
         if (fileInputRef.current) fileInputRef.current.value = ''
     }
 
@@ -328,6 +379,9 @@ export default function ClinicianDashboard() {
         if (!currentSessionId) {
             try {
                 const res = await fetch(`${API_BASE}/sessions/new?source=clinician`, { method: 'POST' })
+                if (!res.ok) {
+                    throw new Error(await readApiError(res, 'Failed to create session.'))
+                }
                 const data = await res.json()
                 currentSessionId = data.id
                 setSessionId(data.id)
@@ -356,24 +410,24 @@ export default function ClinicianDashboard() {
         const imagePath = resolvedImagePath
         removeImage()
 
-        let apiMessage = userMessage.content
-        if (selectedPatient) {
-            apiMessage += `\n\n[System Note: Contextualize response for Patient ${selectedPatient}]`
-        }
-
         try {
             const res = await fetch(`${API_BASE}/chat/stream`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    message: apiMessage,
+                    message: userMessage.content,
                     session_id: currentSessionId,
                     image_path: imagePath || null,
+                    patient_id: selectedPatient || null,
+                    assistant_mode: 'clinician',
                     temperature,
                     model: selectedModel,
                     vision_model: selectedVisionModel,
                 })
             })
+            if (!res.ok) {
+                throw new Error(await readApiError(res, 'Clinical chat request failed.'))
+            }
 
             let assistantAdded = false
 
@@ -458,6 +512,9 @@ export default function ClinicianDashboard() {
                     patient_id: selectedPatient || null,
                 })
             })
+            if (!res.ok) {
+                throw new Error(await readApiError(res, 'SOAP note generation failed.'))
+            }
             const data = await res.json()
             setSoapData(data)
         } catch (err) {
@@ -682,7 +739,15 @@ export default function ClinicianDashboard() {
                             <div style={{ marginTop: '0.75rem' }}>
                                 <PatientInfoPanel
                                     patientData={patientData}
-                                    onClose={() => setPatientData(null)}
+                                    attachments={patientAttachments}
+                                    attachmentsLoading={patientAttachmentsLoading}
+                                    attachmentsError={patientAttachmentsError}
+                                    onClose={() => {
+                                        setPatientData(null)
+                                        setPatientAttachments([])
+                                        setPatientAttachmentsError('')
+                                        setPatientAttachmentsLoading(false)
+                                    }}
                                 />
                             </div>
                         )}
@@ -724,11 +789,6 @@ export default function ClinicianDashboard() {
                             </div>
                         )}
 
-                        {panelData?.is_compound && (
-                            <div style={{ marginTop: '0.5rem' }}>
-                                <CompoundPanelViewer panelData={panelData} />
-                            </div>
-                        )}
                     </div>
 
 
@@ -857,7 +917,7 @@ export default function ClinicianDashboard() {
                                                 <small>
                                                     {imagePreview || uploadedImagePath
                                                         ? 'The next question can use multimodal image analysis automatically.'
-                                                        : 'Attach a chest X-ray or other medical image to add vision, panel detection, and graph evidence.'}
+                                                        : 'Attach a chest X-ray or other medical image to add vision and graph evidence.'}
                                                 </small>
                                             </div>
                                         </div>

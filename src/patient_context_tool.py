@@ -9,10 +9,11 @@ import os
 import sqlite3
 from langchain_core.tools import tool
 
+from src.runtime_config import DATA_DIR
+from src.patient_report_context import enrich_patient_data_with_reports
+
 # Configuration - use absolute path based on project root
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)  # Go up from src/ to project root
-DB_PATH = os.path.join(_PROJECT_ROOT, "data", "mimic_demo.db")
+DB_PATH = os.path.join(DATA_DIR, "mimic_demo.db")
 VITAL_HISTORY_LIMIT = 16
 
 
@@ -49,6 +50,7 @@ def _serialize_vitals_row(row):
         "systolic_bp": row["sbp"],
         "diastolic_bp": row["dbp"],
         "recorded_at": row["charttime"],
+        "source": "chart",
     }
 
 
@@ -209,7 +211,7 @@ def get_patient_data_json(patient_id: str) -> dict:
             })
     result["medications"] = meds
 
-    return result
+    return enrich_patient_data_with_reports(result)
 
 
 if __name__ == "__main__":
